@@ -56,6 +56,7 @@ from nuitka.utils.AppDirs import getCacheDir
 from nuitka.utils.Execution import getNullInput, withEnvironmentPathAdded
 from nuitka.utils.FileOperations import (
     areSamePaths,
+    copyTree,
     getDirectoryRealPath,
     getFileContentByLine,
     getFileContents,
@@ -66,6 +67,7 @@ from nuitka.utils.FileOperations import (
     listDir,
     makePath,
     putTextFileContents,
+    relpath,
     resolveShellPatternToFilenames,
     withFileLock,
 )
@@ -84,7 +86,7 @@ from nuitka.utils.ThreadedExecutor import ThreadPoolExecutor, waitWorkers
 from nuitka.utils.Timing import TimerReport
 
 from .DependsExe import detectDLLsWithDependencyWalker
-from .IncludedDataFiles import IncludedDataFile
+from .IncludedDataFiles import IncludedDataFile, makeIncludedDataFile
 
 
 def loadCodeObjectData(precompiled_filename):
@@ -1285,7 +1287,7 @@ def _handleDataFile(dist_dir, tracer, included_datafile):
 
             for sub_dir in included_datafile.dest_path:
                 makePath(os.path.join(dist_dir, sub_dir))
-        elif included_datafile.kind == "datafile":
+        elif included_datafile.kind == "data_file":
             dest_path = os.path.join(dist_dir, included_datafile.dest_path)
 
             tracer.info(
@@ -1298,6 +1300,20 @@ def _handleDataFile(dist_dir, tracer, included_datafile):
 
             makePath(os.path.dirname(dest_path))
             shutil.copyfile(included_datafile.source_path, dest_path)
+        elif included_datafile.kind == "data_dir":
+            dest_path = os.path.join(dist_dir, included_datafile.dest_path)
+            makePath(os.path.dirname(dest_path))
+
+            copied = copyTree(included_datafile.source_path, dest_path)
+
+            tracer.info(
+                "Included data dir %r with %d files due to %s."
+                % (
+                    included_datafile.dest_path,
+                    len(copied),
+                    included_datafile.reason,
+                )
+            )
         else:
             assert False, included_datafile
     else:
@@ -1332,7 +1348,7 @@ def copyDataFiles(dist_dir):
         necessary handling if provided like this.
     """
 
-    # Many details to deal with, pylint: disable=too-many-locals
+    # Many details to deal with, pylint: disable=too-many-branches,too-many-locals
 
     for pattern, dest, arg in Options.getShallIncludeDataFiles():
         filenames = resolveShellPatternToFilenames(pattern)
@@ -1347,6 +1363,25 @@ def copyDataFiles(dist_dir):
 
             if rel_path.endswith(("/", os.path.sep)):
                 rel_path = os.path.join(rel_path, os.path.basename(filename))
+
+            _handleDataFile(
+                dist_dir,
+                inclusion_logger,
+                makeIncludedDataFile(filename, rel_path, file_reason),
+            )
+
+    for src, dest in Options.getShallIncludeDataDirs():
+        filenames = getFileList(src)
+
+        if not filenames:
+            inclusion_logger.warning("No files in directory" % src)
+
+        for filename in filenames:
+            relative_filename = relpath(filename, src)
+
+            file_reason = "specified data dir %r on command line" % src
+
+            rel_path = os.path.join(dest, relative_filename)
 
             _handleDataFile(
                 dist_dir,
@@ -1397,6 +1432,3 @@ def copyDataFiles(dist_dir):
                         )
 
                 # assert False, (module.getCompileTimeDirectory(), pkg_files)
-
-
-from .IncludedDataFiles import makeIncludedDataFile

@@ -62,6 +62,11 @@ def parseArgs(will_reexec):
     if options.quiet or int(os.environ.get("NUITKA_QUIET", "0")):
         Tracing.setQuiet()
 
+    if not will_reexec and not shallDumpBuiltTreeXML():
+        Tracing.options_logger.info(
+            "Used command line options: %s" % " ".join(sys.argv[1:])
+        )
+
     if options.progress_bar and not will_reexec:
         Progress.enableProgressBar()
 
@@ -290,7 +295,27 @@ the selection of onefile temp directory mode. Check --help output."""
         if not resolveShellPatternToFilenames(src):
             Tracing.options_logger.sysexit("Error, %r does not match any files." % src)
 
-    if options.data_files and not isStandaloneMode():
+    for data_dir in options.data_dirs:
+        if "=" not in data_dir:
+            Tracing.options_logger.sysexit(
+                "Error, malformed data dir description, must specify relative target path with '=' separating it."
+            )
+
+        src, dst = data_dir.split("=", 1)
+
+        if os.path.isabs(dst):
+            Tracing.options_logger.sysexit(
+                "Error, must specify relative target path for data dir, not %r as in %r."
+                % (dst, data_dir)
+            )
+
+        if not os.path.isdir(src):
+            Tracing.options_logger.sysexit(
+                "Error, must specify existing source data directory, not %r as in %r."
+                % (dst, data_dir)
+            )
+
+    if (options.data_files or options.data_dirs) and not isStandaloneMode():
         Tracing.options_logger.sysexit(
             "Error, data files are only included in standalone or onefile mode."
         )
@@ -527,6 +552,14 @@ def getShallIncludeDataFiles():
 
         for pattern in _splitShellPattern(src):
             yield pattern, dest, data_file
+
+
+def getShallIncludeDataDirs():
+    """*list*, items of "--include-data-dir=" """
+    for data_file in options.data_dirs:
+        src, dest = data_file.split("=", 1)
+
+        yield src, dest
 
 
 def shallWarnImplicitRaises():
