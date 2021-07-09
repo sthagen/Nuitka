@@ -27,7 +27,7 @@ from nuitka.__past__ import unicode  # pylint: disable=I0021,redefined-builtin
 from nuitka.PythonVersions import python_version
 from nuitka.Tracing import inclusion_logger, postprocessing_logger
 
-from .Execution import executeToolChecked
+from .Execution import executeToolChecked, withEnvironmentVarOverriden
 from .FileOperations import withMadeWritableFileMode
 from .Utils import getOS, isAlpineLinux, isWin32Windows
 from .WindowsResources import (
@@ -79,12 +79,13 @@ def locateDLL(dll_name):
             name=dll_name, paths=["/lib", "/usr/lib", "/usr/local/lib"]
         )
 
-    # TODO: Could cache ldconfig output
-    output = executeToolChecked(
-        logger=postprocessing_logger,
-        command=["/sbin/ldconfig", "-p"],
-        absence_message=_ldconfig_usage,
-    )
+    with withEnvironmentVarOverriden("LANG", "C"):
+        # TODO: Could cache ldconfig output
+        output = executeToolChecked(
+            logger=postprocessing_logger,
+            command=["/sbin/ldconfig", "-p"],
+            absence_message=_ldconfig_usage,
+        )
 
     dll_map = {}
 
@@ -231,7 +232,7 @@ def _getSharedLibraryRPATHElf(filename):
             result = line[line.find(b"[") + 1 : line.rfind(b"]")]
 
             if str is not bytes:
-                result = result.decode("utf-8")
+                result = result.decode("utf8")
 
             return result
 
@@ -261,7 +262,7 @@ def _getSharedLibraryRPATHDarwin(filename):
                 result = line[5 : line.rfind(b"(") - 1]
 
                 if str is not bytes:
-                    result = result.decode("utf-8")
+                    result = result.decode("utf8")
 
                 return result
 

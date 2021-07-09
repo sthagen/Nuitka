@@ -48,15 +48,51 @@
 #include "frameobject.h"
 #include "marshal.h"
 #include "methodobject.h"
+
+#if PYTHON_VERSION < 0x3a0
 #include "pydebug.h"
+#endif
 
-#if PYTHON_VERSION >= 0x390 && defined(_NUITKA_EXPERIMENTAL_BETTER_THREADS)
+// We are not following the 3.10 change to an inline function. At least
+// not immediately.
+#if PYTHON_VERSION >= 0x3a0
+#undef Py_REFCNT
+#define Py_REFCNT(ob) (_PyObject_CAST(ob)->ob_refcnt)
+#endif
 
+#if defined(_WIN32)
+// Windows is too difficult for API redefines.
+#define MIN_PYCORE_PYTHON_VERSION 0x380
+#else
+#define MIN_PYCORE_PYTHON_VERSION 0x370
+#endif
+
+#if PYTHON_VERSION >= MIN_PYCORE_PYTHON_VERSION
+#define NUITKA_USE_PYCORE_THREADSTATE
+#endif
+
+#ifdef NUITKA_USE_PYCORE_THREADSTATE
+#undef Py_BUILD_CORE
 #define Py_BUILD_CORE
 #undef _PyGC_FINALIZED
+
+#if PYTHON_VERSION < 0x380
+#undef Py_ATOMIC_H
+#include "pyatomic.h"
+#undef Py_INTERNAL_PYSTATE_H
+#include "internal/pystate.h"
+#undef Py_STATE_H
+#include "pystate.h"
+
+extern _PyRuntimeState _PyRuntime;
+#else
 #include "internal/pycore_pystate.h"
+#endif
+
+#if PYTHON_VERSION >= 0x390
 #include <internal/pycore_interp.h>
 #include <internal/pycore_runtime.h>
+#endif
 
 #undef PyThreadState_GET
 #define _PyThreadState_Current _PyRuntime.gilstate.tstate_current
@@ -335,6 +371,10 @@ extern PyObject **global_constants;
 #define const_str_plain_range global_constants[29]
 // 'open'
 #define const_str_plain_open global_constants[30]
+// 'close'
+#define const_str_plain_close global_constants[30]
+// 'throw'
+#define const_str_plain_throw global_constants[30]
 // 'sum'
 #define const_str_plain_sum global_constants[31]
 // 'format'

@@ -1,9 +1,347 @@
 ###############################
- Nuitka Release 0.6.15 (Draft)
+ Nuitka Release 0.6.17 (Draft)
 ###############################
 
 This release is not done yet.
 
+#######################
+ Nuitka Release 0.6.16
+#######################
+
+This release is mostly polishing and new features. Optimization looked
+only at threading performance, and LTO improvements on Windows.
+
+***********
+ Bug Fixes
+***********
+
+-  Fix, the ``pkg-resources`` failed to resolve versions for
+   ``importlib.metadata`` from its standard library at compile time.
+   Fixed in 0.6.15.1 already.
+
+-  Standalone: Fix, ``--include-module`` was not including the module if
+   it was an extension modules, but only for Python modules. Fixed in
+   0.6.15.1 already.
+
+-  Standalone: Added missing implicit dependencies for ``gi.overrides``.
+   Fixed in 0.6.15.1 already.
+
+-  Python3.9: Fix, could crash when using generic aliases in certain
+   configurations. Fixed in 0.6.15.2 already.
+
+-  Fix, the tensorflow plugin needed an update due to changed API. Fixed
+   in 0.6.15.3 already.
+
+-  When error exiting Nuitka, it now closes any open progress bar for
+   cleaner display.
+
+-  Standalone: Added missing dependency for ``skimage``.
+
+-  Standalone: The ``numpy`` plugin now automatically includes Qt
+   backend if any of the Qt binding plugins is active.
+
+**************
+ New Features
+**************
+
+-  Pyton3.5+: Added support for onefile compression. This is using
+   ``zstd`` which is known to give very good compression with very high
+   decompression, much better than e.g. ``zlib``.
+
+-  macOS: Added onefile support.
+
+-  FreeBSD: Added onefile support.
+
+-  Linux: Added method to use tempdir onefile support as used on other
+   platforms as an alternative to ``AppImage`` based.
+
+-  Added support for recursive addition of files from directories with
+   patterns.
+
+-  Attaching the payload to onefile now has a progress bar too.
+
+-  Windows: Prelimary support for the yet unfinished Nuitka-Python that
+   allows static linking and higher performance on Windows, esp. with
+   Nuitka.
+
+-  Windows: In acceleration mode, for uninstalled Python, now a CMD file
+   is created rather than copying the DLL to the binary directory. That
+   avoids conflicts with architectures and of course useless file
+   copies.
+
+-  New abilities for plugin ``anti-bloat`` allow to make it an error
+   when certain modules are imported. Added more specific options for
+   usual trouble makes, esp. ``setuptools``, ``pytest`` are causing an
+   explosion for some programs, while being unused code. This makes it
+   now easier to oversee this.
+
+-  It's now possible to override ``appdirs`` decision for where cache
+   files live with an environment variable ``NUITKA_CACHE_DIR``.
+
+-  The ``-o`` option now also works with onefile mode, it previously
+   rejected anything but acceleration mode. Fixed in 0.6.15.3 already.
+
+-  Plugins: It's now possible for multiple plugins to provide pre or
+   post load code for the same module.
+
+-  Added indications for compilation modes ``standalone`` and
+   ``onefile`` to the ``__compiled__`` attribute.
+
+-  Plugins: Give nicer error message in case of colliding command line
+   options.
+
+**************
+ Optimization
+**************
+
+-  Faster threading code is now using for Python3.8 or higher and not
+   only 3.9, giving a performance boost, esp. on Windows.
+
+-  Using ``--lto`` is now the default with MSVC 2019 or higher. This
+   will given smaller and faster binaries. It has been available for
+   some time, but not been the default yet.
+
+**********
+ Cleanups
+**********
+
+-  Using different progress bar titles for C compilation of Python code
+   and C compilation of onefile bootstrap.
+
+-  Moved platform specific detections, for FreeBSD/OpenBSD/macOS out of
+   the Scons file and to common Nuitka code, sometimes eliminating
+   duplications with one version being more correct than the other.
+
+-  Massive cleanup of datafile plugin, using pattern descriptions, so
+   more code duplication can be removed.
+
+-  More cleanup of the scons files, sharing more common code.
+
+****************
+ Organisational
+****************
+
+-  Under the name Nuitka-Python we are now also developing a fork of
+   CPython with enhancements, you can follow and joint it at
+   https://github.com/Nuitka/Nuitka-Python but at this time it is not
+   yet ready for prime time.
+
+-  Onefile under Windows now only is temporary file mode. Until we
+   figure out how to solve the problems with locking and caching, the
+   mode where it installs to the AppData of the user is no longer
+   available.
+
+-  Renamed the plugin responsible for PyQt5 support to match the names
+   of others. Note however, that at this time, PySide2 or PySide6 are to
+   be recommended.
+
+-  Make it clear that PySide 6.1.2 is actually going to be the supported
+   version of PySide6.
+
+-  Use MSVC in Github actions.
+
+*********
+ Summary
+*********
+
+This release had a massive focus on expanding existing features, esp.
+for onefile, and plugins API, such that we can now configure
+``anti-bloat`` with yaml, have really nice datafile handling options,
+and have onefile on all OSes practically.
+
+#######################
+ Nuitka Release 0.6.15
+#######################
+
+This release polished previous work with bug fixes, but there are also
+important new things that help make Nuitka more usable, with one
+important performance improvement.
+
+***********
+ Bug Fixes
+***********
+
+-  Fix, hard imports were not automatically used in code generation
+   leading to errors when used. Fixed in 0.6.14.2 already.
+
+-  Windows: Fix, ``clcache`` was disabled by mistake. Fixed in 0.6.14.2
+   already.
+
+-  Standalone: Added data files for ``jsonschema`` to be copied
+   automatically.
+
+-  Standalone: Support for ``pendulum`` wasn't working anymore with the
+   last release due to plugin interface issues.
+
+-  Retry downloads without SSL if that fails, as some Python do not have
+   working SSL. Fixed in 0.6.14.5 already.
+
+-  Fix, the ``ccache`` path wasn't working if it contained spaces. Fixed
+   in 0.6.14.5 already.
+
+-  Onefile: For Linux and ARM using proper download off appimage. Fixed
+   in 0.6.14.5 already.
+
+-  Standalone: Added support for ``pyreadstat``. Fixed in 0.6.14.5
+   already.
+
+-  Standalone: Added missing dependencies for ``pandas``. Fixed in
+   0.6.14.6 already.
+
+-  Standalone: Some preloaded packages from ``.pth`` do not have a
+   ``__path__``, these can and must be ignored.
+
+-  Onefile: On Linux, the ``sys.argv[0]`` was not the original file as
+   advertised.
+
+-  Standalone: Do not consider ``.mesh`` and ``.frag`` files as DLls in
+   the Qt bindings when including the qml support. This was causing
+   errors on Linux, but was generally wasteful.
+
+-  Fix, project options could be injected twice, which could lead to
+   errors with options that were only allowed once, e.g.
+   ``--linux-onefile-icon``.
+
+-  Windows: When updating the resources in created binaries, treat all
+   kinds of ``OSError`` with information output.
+
+-  Onefile: Remove onefile target binary path at startup as well, so it
+   cannot cause confusion after error exit.
+
+-  Onefile: In case of error exit from ``AppImage``, preserve its
+   outputs and attempt to detect if there was a locking issue.
+
+-  Standalone: Scan package folders on Linux for DLLs too. This is
+   necessary to properly handle ``PyQt5`` in case of Qt installed in the
+   system as well.
+
+-  Standalone: On Linux, standard QML files were not found.
+
+-  Standalone: Enforce C locale when detecting DLLs on Linux, otherwise
+   whitelisting messages didn't work properly on newer Linux.
+
+-  Standalone: Added support for ``tzdata`` package data files.
+
+-  Standalone: Added support for ``exchangelib``.
+
+-  Python3.9: Fix, type subscripts could cause optimization errors.
+
+-  UI: Project options didn't properly handle quoting of arguments,
+   these are normally removed by the shell.
+
+-  Linux: The default icon for Python in the system is now found with
+   more version specific names and should work on more systems.
+
+-  Standalone: Do not include ``libstdc++`` as it should come from the
+   system rather.
+
+**************
+ New Features
+**************
+
+-  Added plugin ``anti-bloat`` plugin, intended to fight bloat. For now
+   it can make including certain modules an error, a warning, or force
+   ``ImportError``, e.g. ``--noinclude-setuptools-mode=nofollow`` is
+   very much recommended to limit compilation size.
+
+-  The ``pkg-resources`` builtin now covers ``metadata`` and
+   importlib_metadata packages for compile time version resolution as
+   well.
+
+-  Added support for ``PySide2`` on Python version before 3.6, because
+   the patched code needs no workarounds. Fixed in 0.6.14.3 already.
+
+-  Windows: Convert images to icon files on the fly. So now you can
+   specify multiple PNG files, and Nuitka will create an icon out of
+   that automatically.
+
+-  macOS: Automatically download ``ccache`` binary if not present.
+
+-  Plugins: New interface to query the main script path. This allows
+   plugins to look at its directory.
+
+-  UI: Output the versions of Nuitka and Python during compilation.
+
+-  UI: Added option to control static linking. So far this had been
+   enabled only automatically for cases where we are certain, but this
+   allows to force enable or disable it. Now an info is given, if Nuitka
+   thinks it might be possible to enable it, but doesn't do it
+   automatically.
+
+-  UI: Added ``--no-onefile`` to disable ``--onefile`` from project
+   options.
+
+**************
+ Optimization
+**************
+
+-  Much enhanced GIL interaction with Python3.9 giving a big speed boost
+   and better threading behaviour.
+-  Faster conversion of iterables to ``list``, if size can be know,
+   allocation ahead saves a lot of effort.
+-  Added support for ``GenericAlias`` objects as compile time constants.
+
+****************
+ Organisational
+****************
+
+-  Enhanced Github issue raising instructions.
+-  Apply ``rstfmt`` to all documentation and make it part of the commit
+   hook.
+-  Make sure to check Scons files as well. This would have caught the
+   code used to disable ``clcache`` temporarily.
+-  Do not mention Travis in PR template anymore, we have stopped using
+   it.
+-  Updated requirements to latest versions.
+-  Bump requirements for development to 3.7 at least, toosl like black
+   do not work with 3.6 anymore.
+-  Started work on Nuitka Python, a CPython fork intended for enhanced
+   performance and standalone support with Nuitka.
+
+**********
+ Cleanups
+**********
+
+-  Determine system prefix without virtualenv outside of Scons, such
+   that plugins can share the code. There was duplication with the
+   ``numpy`` plugin, and this will only be more complete using all
+   approaches. This also removes a lot of noise from the scons file
+   moving it to shared code.
+
+-  The Qt plugins now collect QML files with cleaner code.
+
+*******
+ Tests
+*******
+
+-  Nicer error message if a wrong search mode is given.
+-  Windows: Added timeout for determining run time traces with
+   dependency walker, sometimes this hangs.
+-  Added test to cover the zip importer.
+-  Making use of project options in onefile tests, making it easier to
+   execute them manually.
+
+*********
+ Summary
+*********
+
+For Windows, it's now easier than ever to create an icon for your
+deployment, because you can use PNG files, and need not produce ICO
+files anymore, with Nuitka doing that for you.
+
+The onefile for Linux had some more or less severe problems that got
+addressed, esp. also when it came to QML applications with PySide.
+
+On the side, we are preparing to greatly improve the caching of Nuitka,
+starting with retaining modules that were demoted to bytecode. There are
+changes in this release, to support that, but it's not yet complete. We
+expect that scalability will then be possible to improve even further.
+
+Generally this is mostly a maintenance release, which outside of the
+threading performance improvement has very little to offer for faster
+execution, but that actually does a lot. Unfortunately right now it's
+limited to 3.9, but some of the newer Python's will also be supported in
+later releases.
 
 #######################
  Nuitka Release 0.6.14
@@ -75,13 +413,11 @@ in the main file should prove to be very useful.
 
    .. code:: python
 
-      # Compilation mode, support OS specific. Note that macOS is going to gain onefile mode "soon".
+      # Compilation mode, support OS specific.
       # nuitka-project-if: {OS} in ("Windows", "Linux"):
       #    nuitka-project: --onefile
       # nuitka-project-if: {OS} not in ("Windows", "Linux"):
       #    nuitka-project: --standalone
-      # nuitka-project-if: {OS} == "Windows":
-      #    nuitka-project: --windows-onefile-tempdir
 
       # The PySide2 plugin covers qt-plugins
       # nuitka-project: --enable-plugin=pyside2
@@ -1012,7 +1348,7 @@ fixes and new features.
    are in the standard library, typically ``.pth`` files will use e.g.
    ``os`` but that's not needed to be preserved.
 
--  Use ``incbin`` for including binary data through inline assemly of
+-  Use ``incbin`` for including binary data through inline assembly of
    the C compiler. This covers many more platforms than our previous
    linker option hacks, and the fallback to generated C code. In fact
    everything but Windows uses this now.
@@ -15035,11 +15371,11 @@ are some bug fixes.
  Organizational
 ****************
 
--  The `gitweb interface <https://nuitka.net/gitweb>`__ might be
-   considered an alternative to downloading the source if you want to
-   provide a pointer, or want to take a quick glance at the source code.
-   You can already download with git, follow the link below to the page
-   explaining it.
+-  The `gitweb interface <https://nuitka.net/gitweb>`__ (since disabled)
+   might be considered an alternative to downloading the source if you
+   want to provide a pointer, or want to take a quick glance at the
+   source code. You can already download with git, follow the link below
+   to the page explaining it.
 
 -  The "README.txt" has documented more of the differences and I
    consequently updated the Differences page. There is now a distinction

@@ -56,6 +56,7 @@ from nuitka.utils.AppDirs import getCacheDir
 from nuitka.utils.Execution import getNullInput, withEnvironmentPathAdded
 from nuitka.utils.FileOperations import (
     areSamePaths,
+    copyFileWithPermissions,
     copyTree,
     getDirectoryRealPath,
     getFileContentByLine,
@@ -297,7 +298,7 @@ print("\\n".join(sorted(
             origin = parts[1].split()[0]
 
             if python_version >= 0x300:
-                module_name = module_name.decode("utf-8")
+                module_name = module_name.decode("utf8")
 
             module_name = ModuleName(module_name)
 
@@ -306,7 +307,7 @@ print("\\n".join(sorted(
                 # chance to do anything, we need to preserve it.
                 filename = parts[1][len(b"precompiled from ") :]
                 if python_version >= 0x300:
-                    filename = filename.decode("utf-8")
+                    filename = filename.decode("utf8")
 
                 # Do not leave standard library when freezing.
                 if not isStandardLibraryPath(filename):
@@ -316,7 +317,7 @@ print("\\n".join(sorted(
             elif origin == b"sourcefile":
                 filename = parts[1][len(b"sourcefile ") :]
                 if python_version >= 0x300:
-                    filename = filename.decode("utf-8")
+                    filename = filename.decode("utf8")
 
                 # Do not leave standard library when freezing.
                 if not isStandardLibraryPath(filename):
@@ -340,7 +341,7 @@ print("\\n".join(sorted(
                 # or self compiled Python installations.
                 filename = parts[1][len(b"dynamically loaded from ") :]
                 if python_version >= 0x300:
-                    filename = filename.decode("utf-8")
+                    filename = filename.decode("utf8")
 
                 # Do not leave standard library when freezing.
                 if not isStandardLibraryPath(filename):
@@ -584,8 +585,55 @@ _detected_python_rpath = None
 
 ldd_result_cache = {}
 
+_linux_dll_ignore_list = (
+    # Do not include kernel / glibc specific libraries. This list has been
+    # assembled by looking what are the most common .so files provided by
+    # glibc packages from ArchLinux, Debian Stretch and CentOS.
+    #
+    # Online sources:
+    #  - https://centos.pkgs.org/7/puias-computational-x86_64/glibc-aarch64-linux-gnu-2.24-2.sdl7.2.noarch.rpm.html
+    #  - https://centos.pkgs.org/7/centos-x86_64/glibc-2.17-222.el7.x86_64.rpm.html
+    #  - https://archlinux.pkgs.org/rolling/archlinux-core-x86_64/glibc-2.28-5-x86_64.pkg.tar.xz.html
+    #  - https://packages.debian.org/stretch/amd64/libc6/filelist
+    #
+    # Note: This list may still be incomplete. Some additional libraries
+    # might be provided by glibc - it may vary between the package versions
+    # and between Linux distros. It might or might not be a problem in the
+    # future, but it should be enough for now.
+    "ld-linux-x86-64.so",
+    "libc.so.",
+    "libpthread.so.",
+    "libm.so.",
+    "libdl.so.",
+    "libBrokenLocale.so.",
+    "libSegFault.so",
+    "libanl.so.",
+    "libcidn.so.",
+    "libcrypt.so.",
+    "libmemusage.so",
+    "libmvec.so.",
+    "libnsl.so.",
+    "libnss_compat.so.",
+    "libnss_db.so.",
+    "libnss_dns.so.",
+    "libnss_files.so.",
+    "libnss_hesiod.so.",
+    "libnss_nis.so.",
+    "libnss_nisplus.so.",
+    "libpcprofile.so",
+    "libresolv.so.",
+    "librt.so.",
+    "libthread_db-1.0.so",
+    "libthread_db.so.",
+    "libutil.so.",
+    # The C++ standard library can also be ABI specific, and can cause system
+    # libraries like MESA to not load any drivers, so we exclude it too, and
+    # it can be assumed to be installed everywhere anyway.
+    "libstdc++.so.",
+)
 
-def _detectBinaryPathDLLsPosix(dll_filename):
+
+def _detectBinaryPathDLLsPosix(dll_filename, package_name, original_dir):
     # This is complex, as it also includes the caching mechanism
     # pylint: disable=too-many-branches
 
@@ -608,7 +656,16 @@ def _detectBinaryPathDLLsPosix(dll_filename):
                 "$ORIGIN", os.path.dirname(sys.executable)
             )
 
-    with withEnvironmentPathAdded("LD_LIBRARY_PATH", _detected_python_rpath):
+    ld_library_path = OrderedSet()
+    if _detected_python_rpath:
+        ld_library_path.add(_detected_python_rpath)
+    ld_library_path.update(getPackageSpecificDLLDirectories(package_name))
+
+    if original_dir is not None:
+        ld_library_path.add(original_dir)
+        # ld_library_path.update(getSubDirectories(original_dir, ignore_dirs=("__pycache__",)))
+
+    with withEnvironmentPathAdded("LD_LIBRARY_PATH", *ld_library_path):
         process = subprocess.Popen(
             args=["ldd", dll_filename],
             stdin=getNullInput(),
@@ -649,56 +706,14 @@ def _detectBinaryPathDLLsPosix(dll_filename):
                 continue
 
             if python_version >= 0x300:
-                filename = filename.decode("utf-8")
+                filename = filename.decode("utf8")
 
             # Sometimes might use stuff not found or supplied by ldd itself.
             if filename in ("not found", "ldd"):
                 continue
 
-            # Do not include kernel / glibc specific libraries. This list has been
-            # assembled by looking what are the most common .so files provided by
-            # glibc packages from ArchLinux, Debian Stretch and CentOS.
-            #
-            # Online sources:
-            #  - https://centos.pkgs.org/7/puias-computational-x86_64/glibc-aarch64-linux-gnu-2.24-2.sdl7.2.noarch.rpm.html
-            #  - https://centos.pkgs.org/7/centos-x86_64/glibc-2.17-222.el7.x86_64.rpm.html
-            #  - https://archlinux.pkgs.org/rolling/archlinux-core-x86_64/glibc-2.28-5-x86_64.pkg.tar.xz.html
-            #  - https://packages.debian.org/stretch/amd64/libc6/filelist
-            #
-            # Note: This list may still be incomplete. Some additional libraries
-            # might be provided by glibc - it may vary between the package versions
-            # and between Linux distros. It might or might not be a problem in the
-            # future, but it should be enough for now.
-            if os.path.basename(filename).startswith(
-                (
-                    "ld-linux-x86-64.so",
-                    "libc.so.",
-                    "libpthread.so.",
-                    "libm.so.",
-                    "libdl.so.",
-                    "libBrokenLocale.so.",
-                    "libSegFault.so",
-                    "libanl.so.",
-                    "libcidn.so.",
-                    "libcrypt.so.",
-                    "libmemusage.so",
-                    "libmvec.so.",
-                    "libnsl.so.",
-                    "libnss_compat.so.",
-                    "libnss_db.so.",
-                    "libnss_dns.so.",
-                    "libnss_files.so.",
-                    "libnss_hesiod.so.",
-                    "libnss_nis.so.",
-                    "libnss_nisplus.so.",
-                    "libpcprofile.so",
-                    "libresolv.so.",
-                    "librt.so.",
-                    "libthread_db-1.0.so",
-                    "libthread_db.so.",
-                    "libutil.so.",
-                )
-            ):
+            # Do not include kernel DLLs on the ignore list.
+            if os.path.basename(filename).startswith(_linux_dll_ignore_list):
                 continue
 
             result.add(filename)
@@ -708,13 +723,19 @@ def _detectBinaryPathDLLsPosix(dll_filename):
     sub_result = set(result)
 
     for sub_dll_filename in result:
-        sub_result = sub_result.union(_detectBinaryPathDLLsPosix(sub_dll_filename))
+        sub_result = sub_result.union(
+            _detectBinaryPathDLLsPosix(
+                dll_filename=sub_dll_filename,
+                package_name=package_name,
+                original_dir=original_dir,
+            )
+        )
 
     return sub_result
 
 
 def _detectBinaryPathDLLsMacOS(original_dir, binary_filename, keep_unresolved):
-    result = set()
+    result = OrderedSet()
 
     process = subprocess.Popen(
         args=["otool", "-L", binary_filename],
@@ -724,22 +745,20 @@ def _detectBinaryPathDLLsMacOS(original_dir, binary_filename, keep_unresolved):
     )
 
     stdout, _stderr = process.communicate()
-    system_paths = (b"/usr/lib/", b"/System/Library/Frameworks/")
+    system_paths = ("/usr/lib/", "/System/Library/Frameworks/")
 
     for line in stdout.split(b"\n")[1:]:
+        if str is not bytes:
+            line = line.decode("utf8")
+
         if not line:
             continue
 
-        filename = line.split(b" (")[0].strip()
-        stop = False
+        filename = line.split(" (", 1)[0].strip()
         for w in system_paths:
             if filename.startswith(w):
-                stop = True
                 break
-        if not stop:
-            if python_version >= 0x300:
-                filename = filename.decode("utf-8")
-
+        else:
             # print("adding", filename)
             result.add(filename)
 
@@ -794,11 +813,11 @@ def _detectBinaryRPathsMacOS(original_dir, binary_filename):
     for i, o in enumerate(lines):
         if o.endswith(b"cmd LC_RPATH"):
             line = lines[i + 2]
-            if python_version >= 0x300:
-                line = line.decode("utf-8")
+            if str is not bytes:
+                line = line.decode("utf8")
 
-            line = line.split("path ")[1]
-            line = line.split(" (offset")[0]
+            line = line.split("path ", 1)[1]
+            line = line.split(" (offset", 1)[0]
             if line.startswith("@loader_path"):
                 line = os.path.join(original_dir, line[13:])
             elif line.startswith("@executable_path"):
@@ -836,6 +855,25 @@ def _getCacheFilename(
 
 
 _scan_dir_cache = {}
+
+
+def getPackageSpecificDLLDirectories(package_name):
+    scan_dirs = OrderedSet()
+
+    if package_name is not None:
+        from nuitka.importing.Importing import findModule
+
+        package_dir = findModule(None, package_name, None, 0, False)[1]
+
+        if os.path.isdir(package_dir):
+            scan_dirs.add(package_dir)
+            scan_dirs.update(
+                getSubDirectories(package_dir, ignore_dirs=("__pycache__",))
+            )
+
+        scan_dirs.update(Plugins.getModuleSpecificDllPaths(package_name))
+
+    return scan_dirs
 
 
 def getScanDirectories(package_name, original_dir):
@@ -972,7 +1010,11 @@ def detectBinaryDLLs(
         Utils.getOS() in ("Linux", "NetBSD", "FreeBSD", "OpenBSD")
         or Utils.isPosixWindows()
     ):
-        return _detectBinaryPathDLLsPosix(dll_filename=original_filename)
+        return _detectBinaryPathDLLsPosix(
+            dll_filename=original_filename,
+            package_name=package_name,
+            original_dir=os.path.dirname(original_filename),
+        )
     elif Utils.isWin32Windows():
         with TimerReport(
             message="Running depends.exe for %s took %%.2f seconds" % binary_filename,
@@ -1063,7 +1105,7 @@ def detectUsedDLLs(source_dir, standalone_entry_points, use_cache, update_cache)
 
 
 def fixupBinaryDLLPathsMacOS(binary_filename, dll_map, original_location):
-    """ For macOS, the binary needs to be told to use relative DLL paths """
+    """For macOS, the binary needs to be told to use relative DLL paths"""
 
     # There may be nothing to do, in case there are no DLLs.
     if not dll_map:
@@ -1278,7 +1320,7 @@ def _handleDataFile(dist_dir, tracer, included_datafile):
     if isinstance(included_datafile, IncludedDataFile):
         if included_datafile.kind == "empty_dirs":
             tracer.info(
-                "Included empty directories %s due to %s."
+                "Included empty directories '%s' due to %s."
                 % (
                     ",".join(included_datafile.dest_path),
                     included_datafile.reason,
@@ -1291,7 +1333,7 @@ def _handleDataFile(dist_dir, tracer, included_datafile):
             dest_path = os.path.join(dist_dir, included_datafile.dest_path)
 
             tracer.info(
-                "Included data file %r due to %s."
+                "Included data file '%s' due to %s."
                 % (
                     included_datafile.dest_path,
                     included_datafile.reason,
@@ -1334,7 +1376,7 @@ def _handleDataFile(dist_dir, tracer, included_datafile):
                 ) as output:
                     output.write(content)
         else:
-            shutil.copy2(source_desc, target_filename)
+            copyFileWithPermissions(source_desc, target_filename)
 
 
 def copyDataFiles(dist_dir):
@@ -1350,19 +1392,24 @@ def copyDataFiles(dist_dir):
 
     # Many details to deal with, pylint: disable=too-many-branches,too-many-locals
 
-    for pattern, dest, arg in Options.getShallIncludeDataFiles():
+    for pattern, src, dest, arg in Options.getShallIncludeDataFiles():
         filenames = resolveShellPatternToFilenames(pattern)
 
         if not filenames:
-            inclusion_logger.warning("No match data file to be included: %r" % pattern)
+            inclusion_logger.warning(
+                "No matching data file to be included for '%s'." % pattern
+            )
 
         for filename in filenames:
-            file_reason = "specified data file %r on command line" % arg
+            file_reason = "specified data file '%s' on command line" % arg
 
-            rel_path = dest
+            if src is None:
+                rel_path = dest
 
-            if rel_path.endswith(("/", os.path.sep)):
-                rel_path = os.path.join(rel_path, os.path.basename(filename))
+                if rel_path.endswith(("/", os.path.sep)):
+                    rel_path = os.path.join(rel_path, os.path.basename(filename))
+            else:
+                rel_path = os.path.join(dest, relpath(filename, src))
 
             _handleDataFile(
                 dist_dir,

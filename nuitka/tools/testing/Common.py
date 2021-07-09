@@ -24,10 +24,8 @@ import atexit
 import gc
 import hashlib
 import os
-import re
 import shutil
 import signal
-import subprocess
 import sys
 import tempfile
 import threading
@@ -35,23 +33,25 @@ import time
 from contextlib import contextmanager
 from optparse import OptionGroup, OptionParser
 
-from nuitka.freezer.DependsExe import getDependsExePath
+from nuitka.__past__ import subprocess
+from nuitka.PythonVersions import (
+    getPartiallySupportedPythonVersions,
+    getSupportedPythonVersions,
+)
 from nuitka.Tracing import OurLogger, my_print
 from nuitka.tree.SourceReading import readSourceCodeFromFilename
 from nuitka.utils.AppDirs import getCacheDir
-from nuitka.utils.Execution import (
-    check_output,
-    getNullInput,
-    isExecutableCommand,
-    withEnvironmentVarOverriden,
-)
+from nuitka.utils.Execution import check_output, getNullInput
 from nuitka.utils.FileOperations import (
+    areSamePaths,
+    getExternalUsePath,
     getFileContentByLine,
     getFileContents,
     getFileList,
     makePath,
     removeDirectory,
 )
+from nuitka.utils.Utils import getOS
 
 from .SearchModes import (
     SearchModeAll,
@@ -139,10 +139,10 @@ print("Anaconda" if os.path.exists(os.path.join(sys.prefix, 'conda-meta')) else 
     _python_vendor = version_output.split(b"\n")[3].strip()
 
     if str is not bytes:
-        _python_version_str = _python_version_str.decode("utf-8")
-        _python_arch = _python_arch.decode("utf-8")
-        _python_executable = _python_executable.decode("utf-8")
-        _python_vendor = _python_vendor.decode("utf-8")
+        _python_version_str = _python_version_str.decode("utf8")
+        _python_arch = _python_arch.decode("utf8")
+        _python_executable = _python_executable.decode("utf8")
+        _python_vendor = _python_vendor.decode("utf8")
 
     assert type(_python_version_str) is str, repr(_python_version_str)
     assert type(_python_arch) is str, repr(_python_arch)
@@ -391,7 +391,7 @@ def compareWithCPython(
         if os.path.exists(compare_with_cpython):
             command = [sys.executable, compare_with_cpython, path, "silent"]
         else:
-            sys.exit("Error, cannot find Nuitka comparison runner.")
+            test_logger.sysexit("Error, cannot locate Nuitka comparison runner.")
 
     if extra_flags is not None:
         command += extra_flags
@@ -419,8 +419,7 @@ def compareWithCPython(
         os.unlink(path)
 
     if result == 2:
-        sys.stderr.write("Interrupted, with CTRL-C\n")
-        sys.exit(2)
+        test_logger.sysexit("Interrupted, with CTRL-C\n", exit_code=2)
 
 
 def checkCompilesNotWithCPython(dirname, filename, search_mode):
@@ -485,206 +484,12 @@ def displayRuntimeTraces(logger, path):
 
     if os.name == "posix":
         # Run with traces to help debugging, specifically in CI environment.
-        if sys.platform == "darwin" or sys.platform.startswith("freebsd"):
+        if getOS() in ("Darwin", "FreeBSD"):
             test_logger.info("dtruss:")
             os.system("sudo dtruss %s" % path)
         else:
             test_logger.info("strace:")
             os.system("strace -s4096 -e file %s" % path)
-
-
-def getRuntimeTraceOfLoadedFiles(logger, path):
-    """ Returns the files loaded when executing a binary. """
-
-    # This will make a crazy amount of work,
-    # pylint: disable=I0021,too-many-branches,too-many-locals,too-many-statements
-
-    if not os.path.exists(path):
-        # TODO: Have a logger package passed.
-        logger.sysexit("Error, cannot find %r (%r)." % (path, os.path.abspath(path)))
-
-    result = []
-
-    if os.name == "posix":
-        if sys.platform == "darwin" or sys.platform.startswith("freebsd"):
-            if not isExecutableCommand("dtruss"):
-                sys.exit(
-                    """\
-Error, needs 'dtruss' on your system to scan used libraries."""
-                )
-
-            if not isExecutableCommand("sudo"):
-                sys.exit(
-                    """\
-Error, needs 'sudo' on your system to scan used libraries."""
-                )
-
-            args = ("sudo", "dtruss", "-t", "open", path)
-        else:
-            if not isExecutableCommand("strace"):
-                sys.exit(
-                    """\
-Error, needs 'strace' on your system to scan used libraries."""
-                )
-
-            args = (
-                "strace",
-                "-e",
-                "file",
-                "-s4096",  # Some paths are truncated in output otherwise
-                os.path.abspath(path),
-            )
-
-        # Ensure executable is not polluted with third party stuff,
-        # tests may fail otherwise due to unexpected libs being loaded
-        with withEnvironmentVarOverriden("LD_PRELOAD", None):
-            tracing_command = args[0] if args[0] != "sudo" else args[1]
-
-            process = subprocess.Popen(
-                args=args, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
-
-            _stdout_strace, stderr_strace = process.communicate()
-            exit_strace = process.returncode
-
-            if exit_strace != 0:
-                if str is not bytes:
-                    stderr_strace = stderr_strace.decode("utf8")
-
-                logger.warning(stderr_strace)
-                logger.sysexit("Failed to run %r." % tracing_command)
-
-            with open(path + ".strace", "wb") as f:
-                f.write(stderr_strace)
-
-            for line in stderr_strace.split(b"\n"):
-                if process.returncode != 0:
-                    logger.my_print(line)
-
-                if not line:
-                    continue
-
-                # Don't consider files not found. The "site" module checks lots
-                # of things.
-                if b"ENOENT" in line:
-                    continue
-
-                if line.startswith(b"stat(") and b"S_IFDIR" in line:
-                    continue
-
-                # Allow stats on the python binary, and stuff pointing to the
-                # standard library, just not uses of it. It will search there
-                # for stuff.
-                if (
-                    line.startswith(b"lstat(")
-                    or line.startswith(b"stat(")
-                    or line.startswith(b"readlink(")
-                ):
-                    filename = line[line.find(b"(") + 2 : line.find(b", ") - 1]
-
-                    # At least Python3.7 considers the default Python3 path.
-                    if filename == b"/usr/bin/python3":
-                        continue
-
-                    if filename in (
-                        b"/usr/bin/python3." + version
-                        for version in (b"5", b"6", b"7", b"8", b"9")
-                    ):
-                        continue
-
-                    binary_path = _python_executable
-                    if str is not bytes:
-                        binary_path = binary_path.encode("utf-8")
-
-                    found = False
-                    while binary_path:
-                        if filename == binary_path:
-                            found = True
-                            break
-
-                        if binary_path == os.path.dirname(binary_path):
-                            break
-
-                        binary_path = os.path.dirname(binary_path)
-
-                        if filename == os.path.join(
-                            binary_path,
-                            b"python"
-                            + (
-                                "%d%d" % (_python_version[0], _python_version[1])
-                            ).encode("utf8"),
-                        ):
-                            found = True
-                            continue
-
-                    if found:
-                        continue
-
-                result.extend(
-                    os.path.abspath(match)
-                    for match in re.findall(b'"(.*?)(?:\\\\0)?"', line)
-                )
-
-            if sys.version.startswith("3"):
-                result = [s.decode("utf-8") for s in result]
-    elif os.name == "nt":
-        command = (
-            getDependsExePath(),
-            "-c",  # Console mode
-            "-ot%s" % path + ".depends",
-            "-f1",
-            "-pb",
-            "-pa1",  # Turn on all profiling options.
-            "-ps1",  # Simulate ShellExecute with app dirs in PATH.
-            "-pp1",  # Do not long DllMain calls.
-            "-po1",  # Log DllMain call for all other messages.
-            "-ph1",  # Hook the process.
-            "-pl1",  # Log LoadLibrary calls.
-            "-pt1",  # Thread information.
-            "-pe1",  # First chance exceptions.
-            "-pg1",  # Log GetProcAddress calls.
-            "-pf1",  # Use full paths.
-            "-pc1",  # Profile child processes.
-            path,
-        )
-
-        subprocess.call(command)
-
-        inside = False
-        for line in getFileContentByLine(path + ".depends"):
-            if "| Module Dependency Tree |" in line:
-                inside = True
-                continue
-
-            if not inside:
-                continue
-
-            if "| Module List |" in line:
-                break
-
-            if "]" not in line:
-                continue
-
-            # Skip missing DLLs, apparently not needed anyway.
-            if "?" in line[: line.find("]")]:
-                continue
-
-            dll_filename = line[line.find("]") + 2 :].rstrip()
-            dll_filename = os.path.normcase(dll_filename)
-
-            assert os.path.isfile(dll_filename), repr(dll_filename)
-
-            # The executable itself is of course exempted.
-            if dll_filename == os.path.normcase(os.path.abspath(path)):
-                continue
-
-            result.append(dll_filename)
-
-        os.unlink(path + ".depends")
-
-    result = list(sorted(set(result)))
-
-    return result
 
 
 def checkRuntimeLoadedFilesForOutsideAccesses(loaded_filenames, white_list):
@@ -1409,7 +1214,7 @@ def compileLibraryTest(search_mode, stage_dir, decide, action):
 
 
 def run_async(coro):
-    """ Execute a coroutine until it's done. """
+    """Execute a coroutine until it's done."""
 
     values = []
     result = None
@@ -1423,7 +1228,7 @@ def run_async(coro):
 
 
 def async_iterate(g):
-    """ Execute async generator until it's done. """
+    """Execute async generator until it's done."""
 
     # Test code for Python3, catches all kinds of exceptions.
     # pylint: disable=broad-except
@@ -1642,3 +1447,384 @@ def killProcess(name, pid):
     else:
         test_logger.info("Killing test process %r." % name)
         os.kill(pid, signal.SIGINT)
+
+
+def checkLoadedFileAccesses(loaded_filenames, current_dir):
+    # Many details to consider, pylint: disable=too-many-branches,too-many-statements
+
+    current_dir = os.path.normpath(current_dir)
+    current_dir = os.path.normcase(current_dir)
+    current_dir_ext = os.path.normcase(getExternalUsePath(current_dir))
+
+    illegal_accesses = []
+
+    for loaded_filename in loaded_filenames:
+        orig_loaded_filename = loaded_filename
+
+        loaded_filename = os.path.normpath(loaded_filename)
+        loaded_filename = os.path.normcase(loaded_filename)
+        loaded_basename = os.path.basename(loaded_filename)
+
+        if os.name == "nt":
+            if areSamePaths(
+                os.path.dirname(loaded_filename),
+                os.path.normpath(os.path.join(os.environ["SYSTEMROOT"], "System32")),
+            ):
+                continue
+            if areSamePaths(
+                os.path.dirname(loaded_filename),
+                os.path.normpath(os.path.join(os.environ["SYSTEMROOT"], "SysWOW64")),
+            ):
+                continue
+
+            if r"windows\winsxs" in loaded_filename:
+                continue
+
+            # Github actions have these in PATH overriding SYSTEMROOT
+            if r"windows performance toolkit" in loaded_filename:
+                continue
+            if r"powershell" in loaded_filename:
+                continue
+            if r"azure dev spaces cli" in loaded_filename:
+                continue
+            if r"tortoisesvn" in loaded_filename:
+                continue
+
+        if loaded_filename.startswith(current_dir):
+            continue
+
+        if loaded_filename.startswith(os.path.abspath(current_dir)):
+            continue
+
+        if loaded_filename.startswith(current_dir_ext):
+            continue
+
+        if loaded_filename.startswith("/etc/"):
+            continue
+
+        if loaded_filename.startswith("/usr/etc/"):
+            continue
+
+        if loaded_filename.startswith("/proc/") or loaded_filename == "/proc":
+            continue
+
+        if loaded_filename.startswith("/dev/"):
+            continue
+
+        if loaded_filename.startswith("/tmp/"):
+            continue
+
+        if loaded_filename.startswith("/run/"):
+            continue
+
+        if loaded_filename.startswith("/usr/lib/locale/"):
+            continue
+
+        if loaded_filename.startswith("/usr/share/locale/"):
+            continue
+
+        if loaded_filename.startswith("/usr/share/X11/locale/"):
+            continue
+
+        # Themes may of course be loaded.
+        if loaded_filename.startswith("/usr/share/themes"):
+            continue
+        if "gtk" in loaded_filename and "/engines/" in loaded_filename:
+            continue
+
+        if loaded_filename in (
+            "/usr",
+            "/usr/local",
+            "/usr/local/lib",
+            "/usr/share",
+            "/usr/local/share",
+            "/usr/lib64",
+        ):
+            continue
+
+        # TCL/tk for tkinter for non-Windows is OK.
+        if loaded_filename.startswith(
+            (
+                "/usr/lib/tcltk/",
+                "/usr/share/tcltk/",
+                "/usr/lib/tcl/",
+                "/usr/lib64/tcl/",
+            )
+        ):
+            continue
+        if loaded_filename in (
+            "/usr/lib/tcltk",
+            "/usr/share/tcltk",
+            "/usr/lib/tcl",
+            "/usr/lib64/tcl",
+        ):
+            continue
+
+        if loaded_filename in (
+            "/lib",
+            "/lib64",
+            "/lib/sse2",
+            "/lib/tls",
+            "/lib64/tls",
+            "/usr/lib/sse2",
+            "/usr/lib/tls",
+            "/usr/lib64/tls",
+        ):
+            continue
+
+        if loaded_filename in ("/usr/share/tcl8.6", "/usr/share/tcl8.5"):
+            continue
+        if loaded_filename in (
+            "/usr/share/tcl8.6/init.tcl",
+            "/usr/share/tcl8.5/init.tcl",
+        ):
+            continue
+        if loaded_filename in (
+            "/usr/share/tcl8.6/encoding",
+            "/usr/share/tcl8.5/encoding",
+        ):
+            continue
+
+        # System SSL config on Linux. TODO: Should this not be included and
+        # read from dist folder.
+        if loaded_basename == "openssl.cnf":
+            continue
+
+        # Taking these from system is harmless and desirable
+        if loaded_basename.startswith(("libz.so", "libgcc_s.so")):
+            continue
+
+        # System C libraries are to be expected.
+        if loaded_basename.startswith(
+            (
+                "ld-linux-x86-64.so",
+                "libc.so.",
+                "libpthread.so.",
+                "libm.so.",
+                "libdl.so.",
+                "libBrokenLocale.so.",
+                "libSegFault.so",
+                "libanl.so.",
+                "libcidn.so.",
+                "libcrypt.so.",
+                "libmemusage.so",
+                "libmvec.so.",
+                "libnsl.so.",
+                "libnss_compat.so.",
+                "libnss_db.so.",
+                "libnss_dns.so.",
+                "libnss_files.so.",
+                "libnss_hesiod.so.",
+                "libnss_nis.so.",
+                "libnss_nisplus.so.",
+                "libpcprofile.so",
+                "libresolv.so.",
+                "librt.so.",
+                "libthread_db-1.0.so",
+                "libthread_db.so.",
+                "libutil.so.",
+            )
+        ):
+            continue
+
+        # System C++ standard library is also OK.
+        if loaded_basename.startswith("libstdc++."):
+            continue
+
+        # Curses library is OK from system too.
+        if loaded_basename.startswith("libtinfo.so."):
+            continue
+
+        # Loaded by C library potentially for DNS lookups.
+        if loaded_basename.startswith(
+            (
+                "libnss_",
+                "libnsl",
+                # Some systems load a lot more, this is CentOS 7 on OBS
+                "libattr.so.",
+                "libbz2.so.",
+                "libcap.so.",
+                "libdw.so.",
+                "libelf.so.",
+                "liblzma.so.",
+                # Some systems load a lot more, this is Fedora 26 on OBS
+                "libselinux.so.",
+                "libpcre.so.",
+                # And this is Fedora 29 on OBS
+                "libblkid.so.",
+                "libmount.so.",
+                "libpcre2-8.so.",
+                # CentOS 8 on OBS
+                "libuuid.so.",
+            )
+        ):
+            continue
+
+        # Loaded by dtruss on macOS X.
+        if loaded_filename.startswith("/usr/lib/dtrace/"):
+            continue
+
+        # Loaded by cowbuilder and pbuilder on Debian
+        if loaded_basename == ".ilist":
+            continue
+        if "cowdancer" in loaded_filename:
+            continue
+        if "eatmydata" in loaded_filename:
+            continue
+
+        # Loading from home directories is OK too.
+        if (
+            loaded_filename.startswith("/home/")
+            or loaded_filename.startswith("/data/")
+            or loaded_filename.startswith("/root/")
+            or loaded_filename in ("/home", "/data", "/root")
+        ):
+            continue
+
+        # For Debian builders, /build is OK too.
+        if loaded_filename.startswith("/build/") or loaded_filename == "/build":
+            continue
+
+        # TODO: Unclear, loading gconv from filesystem of installed system
+        # may be OK or not. I think it should be.
+        if loaded_basename == "gconv-modules.cache":
+            continue
+        if "/gconv/" in loaded_filename:
+            continue
+        if loaded_basename.startswith("libicu"):
+            continue
+        if loaded_filename.startswith("/usr/share/icu/"):
+            continue
+
+        # Loading from caches is OK.
+        if loaded_filename.startswith("/var/cache/"):
+            continue
+
+        # At least Python3.7 considers the default Python3 path and checks it.
+        if loaded_filename == "/usr/bin/python3":
+            continue
+
+        # Accessing the versioned Python3.x binary is also happening.
+        if loaded_filename in (
+            "/usr/bin/python3." + version for version in ("5", "6", "7", "8", "9", "10")
+        ):
+            continue
+
+        binary_path = _python_executable
+
+        found = False
+        while binary_path:
+            if loaded_filename == binary_path:
+                found = True
+                break
+
+            if binary_path == os.path.dirname(binary_path):
+                break
+
+            binary_path = os.path.dirname(binary_path)
+
+            if loaded_filename == os.path.join(
+                binary_path,
+                "python" + ("%d%d" % (_python_version[0], _python_version[1])),
+            ):
+                found = True
+                break
+
+        if found:
+            continue
+
+        lib_prefix_dir = "/usr/lib/python%d.%s" % (
+            _python_version[0],
+            _python_version[1],
+        )
+
+        # PySide accesses its directory.
+        if loaded_filename == os.path.join(lib_prefix_dir, "dist-packages/PySide"):
+            continue
+
+        # GTK accesses package directories only.
+        if loaded_filename == os.path.join(lib_prefix_dir, "dist-packages/gtk-2.0/gtk"):
+            continue
+        if loaded_filename == os.path.join(lib_prefix_dir, "dist-packages/glib"):
+            continue
+        if loaded_filename == os.path.join(lib_prefix_dir, "dist-packages/gtk-2.0/gio"):
+            continue
+        if loaded_filename == os.path.join(lib_prefix_dir, "dist-packages/gobject"):
+            continue
+
+        # PyQt5 seems to do this, but won't use contents then.
+        if loaded_filename in (
+            "/usr/lib/qt5/plugins",
+            "/usr/lib/qt5",
+            "/usr/lib64/qt5/plugins",
+            "/usr/lib64/qt5",
+            "/usr/lib/x86_64-linux-gnu/qt5/plugins",
+            "/usr/lib/x86_64-linux-gnu/qt5",
+            "/usr/lib/x86_64-linux-gnu",
+            "/usr/lib",
+        ):
+            continue
+
+        # Can look at the interpreters of the system.
+        if loaded_basename in "python3":
+            continue
+        if loaded_basename in (
+            "python%s" + supported_version
+            for supported_version in (
+                getSupportedPythonVersions() + getPartiallySupportedPythonVersions()
+            )
+        ):
+            continue
+
+        # Current Python executable can actually be a symlink and
+        # the real executable which it points to will be on the
+        # loaded_filenames list. This is all fine, let's ignore it.
+        # Also, because the loaded_filename can be yet another symlink
+        # (this is weird, but it's true), let's better resolve its real
+        # path too.
+        if os.path.realpath(loaded_filename) == os.path.realpath(sys.executable):
+            continue
+
+        # Accessing SE-Linux is OK.
+        if loaded_filename in ("/sys/fs/selinux", "/selinux"):
+            continue
+
+        # Looking at device is OK.
+        if loaded_filename.startswith("/sys/devices/"):
+            continue
+
+        # Allow reading time zone info of local system.
+        if loaded_filename.startswith("/usr/share/zoneinfo/"):
+            continue
+
+        # The access to .pth files has no effect.
+        if loaded_filename.endswith(".pth"):
+            continue
+
+        # Looking at site-package dir alone is alone.
+        if loaded_filename.endswith(("site-packages", "dist-packages")):
+            continue
+
+        # QtNetwork insist on doing this it seems.
+        if loaded_basename.startswith(("libcrypto.so", "libssl.so")):
+            continue
+
+        # macOS uses these:
+        if loaded_basename in (
+            "libcrypto.1.0.0.dylib",
+            "libssl.1.0.0.dylib",
+            "libcrypto.1.1.dylib",
+        ):
+            continue
+
+        # Linux onefile uses this
+        if loaded_basename.startswith("libfuse.so."):
+            continue
+
+        # MSVC run time DLLs, due to SxS come from system.
+        if loaded_basename.upper() in ("MSVCRT.DLL", "MSVCR90.DLL"):
+            continue
+
+        illegal_accesses.append(orig_loaded_filename)
+
+    return illegal_accesses

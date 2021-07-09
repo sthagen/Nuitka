@@ -106,6 +106,11 @@ class NuitkaPluginPopularImplicitImports(NuitkaPluginBase):
             yield "cairo"
         elif full_name == "cairo._cairo":
             yield "gi._gobject"
+        elif full_name == "gi.overrides":
+            yield "gi.overrides.Gtk"
+            yield "gi.overrides.Gdk"
+            yield "gi.overrides.GLib"
+            yield "gi.overrides.GObject"
         elif full_name in ("Tkinter", "tkinter"):
             yield "_tkinter"
         elif full_name == "cryptography":
@@ -713,6 +718,7 @@ class NuitkaPluginPopularImplicitImports(NuitkaPluginBase):
         elif full_name == "skimage.filters.rank":
             yield "skimage.filters.rank.bilateral_cy"
             yield "skimage.filters.rank.core_cy"
+            yield "skimage.filters.rank.core_cy_3d"
             yield "skimage.filters.rank.generic_cy"
             yield "skimage.filters.rank.percentile_cy"
 
@@ -931,6 +937,7 @@ class NuitkaPluginPopularImplicitImports(NuitkaPluginBase):
             yield "pandas._libs.tslibs.nattype"
             yield "pandas._libs.tslibs.base"
         elif full_name == "pandas.core.window":
+            yield "pandas._libs.window"
             yield "pandas._libs.skiplist"
         elif full_name == "pandas._libs.testing":
             yield "cmath"
@@ -1032,6 +1039,8 @@ class NuitkaPluginPopularImplicitImports(NuitkaPluginBase):
             yield "cytoolz.utils"
         elif full_name == "cytoolz.functoolz":
             yield "cytoolz._signatures"
+        elif full_name == "exchangelib":
+            yield "tzdata"
 
     def getImportsByFullname(self, full_name, module_filename):
         """Recursively create a set of imports for a fullname.

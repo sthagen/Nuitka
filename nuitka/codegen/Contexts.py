@@ -344,7 +344,7 @@ class CodeObjectsMixin(object):
     else:
 
         def _calcHash(self, key):
-            hash_value = hashlib.md5("-".join(str(s) for s in key).encode("utf-8"))
+            hash_value = hashlib.md5("-".join(str(s) for s in key).encode("utf8"))
 
             return hash_value.hexdigest()
 
@@ -641,12 +641,12 @@ class FrameDeclarationsMixin(object):
         return self.frames_used
 
     def pushFrameVariables(self, frame_variables):
-        """ Set current the frame variables. """
+        """Set current the frame variables."""
         self.frame_variables_stack.append(frame_variables)
         self.frame_type_descriptions.append(set())
 
     def popFrameVariables(self):
-        """ End of frame, restore previous ones. """
+        """End of frame, restore previous ones."""
         del self.frame_variables_stack[-1]
         del self.frame_type_descriptions[-1]
 

@@ -19,4 +19,6 @@
 #
 from __future__ import print_function
 
+# nuitka-project: --onefile
+
 print("Hello Onefile World!")

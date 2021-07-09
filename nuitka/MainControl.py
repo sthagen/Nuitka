@@ -49,6 +49,9 @@ from nuitka.Progress import (
 from nuitka.PythonVersions import (
     getPythonABI,
     getSupportedPythonVersions,
+    getSystemPrefixPath,
+    getSystemStaticLibPythonPath,
+    isNuitkaPython,
     python_version,
     python_version_str,
 )
@@ -64,6 +67,7 @@ from nuitka.utils.FileOperations import (
 )
 from nuitka.utils.Importing import getSharedLibrarySuffix
 from nuitka.utils.ModuleNames import ModuleName
+from nuitka.Version import getCommercialVersion, getNuitkaVersion
 
 from . import ModuleRegistry, Options, OutputDirectories, TreeXML
 from .build import SconsInterface
@@ -83,6 +87,8 @@ def _createNodeTree(filename):
     optimization, or immediately through recursed directory paths.
 
     """
+
+    # Many cases to deal with, pylint: disable=too-many-branches
 
     # First, build the raw node tree from the source code.
     main_module = Building.buildModuleTree(
@@ -106,9 +112,15 @@ def _createNodeTree(filename):
         removeDirectory(path=standalone_dir, ignore_errors=True)
         makePath(standalone_dir)
 
+    # Delete result file, to avoid confusion with previous build and to
+    # avoid locking issues after the build.
     deleteFile(
         path=OutputDirectories.getResultFullpath(onefile=False), must_exist=False
     )
+    if Options.isOnefileMode():
+        deleteFile(
+            path=OutputDirectories.getResultFullpath(onefile=True), must_exist=False
+        )
 
     # Second, do it for the directories given.
     for plugin_filename in Options.getShallFollowExtra():
@@ -147,7 +159,8 @@ def _createNodeTree(filename):
 
         if kind != "absolute":
             inclusion_logger.sysexit(
-                "Error, failed to locate module %r you asked to include." % module_name
+                "Error, failed to locate module '%s' you asked to include."
+                % module_name
             )
 
         Recursion.checkPluginSinglePath(
@@ -284,7 +297,7 @@ def makeSourceDirectory():
                 else:
                     ModuleRegistry.removeUncompiledModule(uncompiled_module)
 
-    # Lets check if the recurse-to modules are actually present, and warn the
+    # Lets check if the asked modules are actually present, and warn the
     # user if one of those was not found.
     for any_case_module in Options.getShallFollowModules():
         if "*" in any_case_module or "{" in any_case_module:
@@ -397,6 +410,7 @@ def runSconsBackend(quiet):
     options = {
         "result_name": OutputDirectories.getResultBasepath(onefile=False),
         "source_dir": OutputDirectories.getSourceDirectoryPath(),
+        "nuitka_python": asBoolStr(isNuitkaPython()),
         "debug_mode": asBoolStr(Options.is_debug),
         "python_debug": asBoolStr(Options.isPythonDebug()),
         "unstripped_mode": asBoolStr(Options.isUnstripped()),
@@ -406,7 +420,7 @@ def runSconsBackend(quiet):
         "trace_mode": asBoolStr(Options.shallTraceExecution()),
         "python_version": python_version_str,
         "target_arch": Utils.getArchitecture(),
-        "python_prefix": getDirectoryRealPath(sys.prefix),
+        "python_prefix": getDirectoryRealPath(getSystemPrefixPath()),
         "nuitka_src": SconsInterface.getSconsDataPath(),
         "module_count": "%d"
         % (
@@ -419,8 +433,8 @@ def runSconsBackend(quiet):
     if not Options.shallMakeModule():
         options["result_exe"] = OutputDirectories.getResultFullpath(onefile=False)
 
-    if Options.shallUseStaticLibPython():
-        options["static_libpython"] = asBoolStr(True)
+    if Options.shallUseStaticLibPython() and getSystemStaticLibPythonPath() is not None:
+        options["static_libpython"] = getSystemStaticLibPythonPath()
 
     if Options.isStandaloneMode():
         options["standalone_mode"] = asBoolStr(True)
@@ -428,8 +442,8 @@ def runSconsBackend(quiet):
     if Options.isOnefileMode():
         options["onefile_mode"] = asBoolStr(True)
 
-    if Options.isWindowsOnefileTempDirMode():
-        options["onefile_temp_mode"] = asBoolStr(True)
+        if Options.isOnefileTempDirMode():
+            options["onefile_temp_mode"] = asBoolStr(True)
 
     if Options.getForcedStdoutPath():
         options["forced_stdout_path"] = Options.getForcedStdoutPath()
@@ -677,7 +691,10 @@ def main():
     # Main has to fulfill many options, leading to many branches and statements
     # to deal with them.  pylint: disable=too-many-branches,too-many-statements
     if not Options.shallDumpBuiltTreeXML():
-        general.info("Starting Python compilation.")
+        general.info(
+            "Starting Python compilation with Nuitka %r on Python %r commercial %r."
+            % (getNuitkaVersion(), python_version_str, getCommercialVersion())
+        )
 
     filename = Options.getPositionalArgs()[0]
 
@@ -799,7 +816,11 @@ __name__ = ...
 
         # Execute the module immediately if option was given.
         if Options.shallExecuteImmediately():
-            general.info("Launching %r." % final_filename)
+            run_filename = OutputDirectories.getResultRunFilename(
+                onefile=Options.isOnefileMode()
+            )
+
+            general.info("Launching %r." % run_filename)
 
             if Options.shallMakeModule():
                 executeModule(
@@ -808,6 +829,6 @@ __name__ = ...
                 )
             else:
                 executeMain(
-                    binary_filename=final_filename,
+                    binary_filename=run_filename,
                     clean_path=Options.shallClearPythonPathEnvironment(),
                 )

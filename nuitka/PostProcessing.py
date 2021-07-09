@@ -21,7 +21,6 @@
 
 import ctypes
 import os
-import shutil
 import sys
 
 from nuitka import Options, OutputDirectories
@@ -34,7 +33,10 @@ from nuitka.PythonVersions import (
 )
 from nuitka.Tracing import postprocessing_logger
 from nuitka.utils.FileOperations import (
+    getExternalUsePath,
     getFileContents,
+    makePath,
+    putTextFileContents,
     removeFileExecutablePermission,
 )
 from nuitka.utils.SharedLibraries import callInstallNameTool
@@ -90,7 +92,7 @@ class IconGroupDirectoryEntry(ctypes.Structure):
 
 
 def readFromFile(readable, c_struct):
-    """ Read ctypes structures from input. """
+    """Read ctypes structures from input."""
 
     result = c_struct()
     chunk = readable.read(ctypes.sizeof(result))
@@ -99,6 +101,8 @@ def readFromFile(readable, c_struct):
 
 
 def _addWindowsIconFromIcons(onefile):
+    # Relatively detailed handling, pylint: disable=too-many-locals
+
     icon_group = 1
     image_id = 1
     images = []
@@ -113,6 +117,48 @@ def _addWindowsIconFromIcons(onefile):
             icon_path = icon_spec
             icon_index = None
 
+        icon_path = os.path.normcase(icon_path)
+
+        if not icon_path.endswith(".ico"):
+            postprocessing_logger.info("Not in Windows icon format, converting to it.")
+
+            if icon_index is not None:
+                postprocessing_logger.sysexit(
+                    "Cannot specify indexes with non-ico format files in '%s'."
+                    % icon_spec
+                )
+
+            try:
+                import imageio
+            except ImportError:
+                postprocessing_logger.sysexit(
+                    "Need to install 'imageio' to automatically convert non-ico icon file in '%s'."
+                    % icon_spec
+                )
+
+            try:
+                image = imageio.imread(icon_path)
+            except ValueError:
+                postprocessing_logger.sysexit(
+                    "Unsupported file format for imageio in '%s', use e.g. PNG files."
+                    % icon_spec
+                )
+
+            icon_build_path = os.path.join(
+                OutputDirectories.getSourceDirectoryPath(onefile=onefile),
+                "icons",
+            )
+
+            makePath(icon_build_path)
+
+            converted_icon_path = os.path.join(
+                icon_build_path,
+                "icon-%d.ico" % image_id,
+            )
+
+            imageio.imwrite(converted_icon_path, image)
+            icon_path = converted_icon_path
+
         with open(icon_path, "rb") as icon_file:
             # Read header and icon entries.
             header = readFromFile(icon_file, IconDirectoryHeader)
@@ -124,14 +170,14 @@ def _addWindowsIconFromIcons(onefile):
             if icon_index is not None:
                 if icon_index > len(icons):
                     postprocessing_logger.sysexit(
-                        "Error, referenced icon index %d in file %r with only %d icons."
+                        "Error, referenced icon index %d in file '%s' with only %d icons."
                         % (icon_index, icon_path, len(icons))
                     )
 
                 icons[:] = icons[icon_index : icon_index + 1]
 
             postprocessing_logger.info(
-                "Adding %d icon(s) from icon file %r." % (len(icons), icon_spec)
+                "Adding %d icon(s) from icon file '%s'." % (len(icons), icon_spec)
             )
 
             # Image data are to be scanned from places specified icon entries
@@ -326,4 +372,18 @@ def executePostProcessing():
             os.unlink(candidate)
 
     if isWin32Windows() and Options.shallTreatUninstalledPython():
-        shutil.copy(getTargetPythonDLLPath(), os.path.dirname(result_filename) or ".")
+        dll_directory = getExternalUsePath(os.path.dirname(getTargetPythonDLLPath()))
+
+        cmd_filename = OutputDirectories.getResultRunFilename(onefile=False)
+
+        cmd_contents = """
+@echo off
+rem This script was created by Nuitka to execute '%(exe_filename)s' with Python DLL being found.
+set PATH=%(dll_directory)s;%%PATH%%
+"%%~dp0.\\%(exe_filename)s"
+""" % {
+            "dll_directory": dll_directory,
+            "exe_filename": os.path.basename(result_filename),
+        }
+
+        putTextFileContents(cmd_filename, cmd_contents)

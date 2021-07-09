@@ -27,6 +27,7 @@ making it more difficult to use.
 """
 
 from nuitka import Options
+from nuitka.__past__ import GenericAlias
 from nuitka.Builtins import builtin_names
 from nuitka.Constants import isConstant
 from nuitka.PythonVersions import python_version
@@ -124,6 +125,33 @@ def makeRaiseExceptionReplacementExpressionFromInstance(expression, exception):
     )
 
 
+def makeRaiseExceptionStatementFromInstance(exception, source_ref):
+    assert isinstance(exception, Exception)
+
+    args = exception.args
+    if type(args) is tuple and len(args) == 1:
+        value = args[0]
+    else:
+        assert type(args) is tuple
+        value = args
+
+    from .BuiltinRefNodes import ExpressionBuiltinExceptionRef
+    from .ConstantRefNodes import makeConstantRefNode
+    from .ExceptionNodes import StatementRaiseExceptionImplicit
+
+    return StatementRaiseExceptionImplicit(
+        exception_type=ExpressionBuiltinExceptionRef(
+            exception_name=exception.__class__.__name__, source_ref=source_ref
+        ),
+        exception_value=makeConstantRefNode(
+            constant=value, source_ref=source_ref, user_provided=False
+        ),
+        exception_cause=None,
+        exception_trace=None,
+        source_ref=source_ref,
+    )
+
+
 def makeRaiseExceptionExpressionFromTemplate(
     exception_type, template, template_args, source_ref
 ):
@@ -217,6 +245,13 @@ def makeCompileTimeConstantReplacementNode(value, node, user_provided):
             )
         else:
             return node
+    elif isinstance(value, GenericAlias):
+        from .BuiltinTypeNodes import ExpressionConstantGenericAlias
+
+        return ExpressionConstantGenericAlias(
+            generic_alias=value,
+            source_ref=node.getSourceReference(),
+        )
     else:
         return node
 
@@ -264,7 +299,7 @@ def makeStatementExpressionOnlyReplacementNode(expression, node):
 
 
 def mergeStatements(statements, allow_none=False):
-    """ Helper function that merges nested statement sequences. """
+    """Helper function that merges nested statement sequences."""
     merged_statements = []
 
     for statement in statements:

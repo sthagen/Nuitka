@@ -25,10 +25,16 @@ import os
 
 from nuitka import ModuleRegistry, Options
 from nuitka.importing import ImportCache, Importing, StandardLibrary
+from nuitka.nodes.NodeMakingHelpers import (
+    makeRaiseExceptionStatementFromInstance,
+)
 from nuitka.plugins.Plugins import Plugins
 from nuitka.PythonVersions import python_version
 from nuitka.Tracing import recursion_logger
-from nuitka.tree.SourceReading import readSourceCodeFromFilename
+from nuitka.tree.TreeHelpers import (
+    makeModuleFrame,
+    makeStatementsSequenceFromStatement,
+)
 from nuitka.utils.FileOperations import listDir, relpath
 from nuitka.utils.ModuleNames import ModuleName
 
@@ -37,7 +43,7 @@ def _recurseTo(module_package, module_filename, module_relpath, module_kind, rea
     from nuitka.nodes.ModuleNodes import makeUncompiledPythonModule
     from nuitka.tree import Building
 
-    module, source_ref, source_filename = Building.decideModuleTree(
+    module, source_ref, source_code = Building.decideModuleTree(
         filename=module_filename,
         package=module_package,
         is_top=False,
@@ -51,12 +57,8 @@ def _recurseTo(module_package, module_filename, module_relpath, module_kind, rea
             % (module.getFullName(), module_relpath, reason)
         )
 
-    if module_kind == "py" and source_filename is not None:
+    if source_code is not None:
         try:
-            source_code = readSourceCodeFromFilename(
-                module_name=module.getFullName(), source_filename=source_filename
-            )
-
             Building.createModuleTree(
                 module=module,
                 source_ref=source_ref,
@@ -69,11 +71,23 @@ def _recurseTo(module_package, module_filename, module_relpath, module_kind, rea
 
                 recursion_logger.warning(
                     """\
-Cannot follow import to module %r (%r) because of %r"""
-                    % (module_relpath, module_filename, e.__class__.__name__)
+Cannot follow import to module '%s' because of %r."""
+                    % (module.getFullName(), e.__class__.__name__)
                 )
 
-            return None, False
+            module_body = makeModuleFrame(
+                module=module,
+                statements=(
+                    makeRaiseExceptionStatementFromInstance(
+                        source_ref=source_ref, exception=e
+                    ),
+                ),
+                source_ref=source_ref,
+            )
+
+            module_body = makeStatementsSequenceFromStatement(statement=module_body)
+            module.setChild("body", module_body)
+
         except Building.CodeTooComplexCode:
             if module_filename not in Importing.warned_about:
                 Importing.warned_about.add(module_filename)
@@ -141,7 +155,7 @@ def decideRecursion(module_filename, module_name, module_kind, extra_recursion=F
         module_filename, module_name, module_kind
     )
 
-    if plugin_decision:
+    if plugin_decision is not None:
         return plugin_decision
 
     if module_kind == "shlib":
@@ -278,10 +292,9 @@ def checkPluginSinglePath(plugin_filename, module_package):
 
                 if Options.isShowInclusion():
                     recursion_logger.info(
-                        "Recursed to %s %s %s"
+                        "Recursed to '%s' %s"
                         % (
-                            module.getName(),
-                            module.getFullName().getPackageName(),
+                            module.getFullName(),
                             module,
                         )
                     )
@@ -327,6 +340,9 @@ def checkPluginSinglePath(plugin_filename, module_package):
 
                 elif module.isCompiledPythonModule():
                     ModuleRegistry.addRootModule(module)
+                elif module.isPythonShlibModule():
+                    if Options.isStandaloneMode():
+                        ModuleRegistry.addRootModule(module)
 
             else:
                 recursion_logger.warning(

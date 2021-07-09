@@ -63,6 +63,11 @@ def cleanupWindowsNewlines(filename):
     updated_code = source_code.replace(b"\r\n", b"\n")
     updated_code = updated_code.replace(b"\n\r", b"\n")
 
+    # Smuggle consistency replacement in here.
+    if "Autoformat.py" not in filename:
+        updated_code = updated_code.replace(b'.decode("utf-8")', b'.decode("utf8")')
+        updated_code = updated_code.replace(b'.encode("utf-8")', b'.encode("utf8")')
+
     if updated_code != source_code:
         with open(filename, "wb") as out_file:
             out_file.write(updated_code)
@@ -109,12 +114,6 @@ def _checkRequiredVersion(tool, tool_call):
     else:
         sys.exit("Error, cannot find %r in requirements-devel.txt" % tool)
 
-    if tool == "rstfmt":
-        if "-m" in tool_call:
-            return False, "rstfmt doesn't support that yet."
-        else:
-            return True, "unchecked"
-
     tool_call = list(tool_call) + ["--version"]
 
     try:
@@ -128,10 +127,15 @@ def _checkRequiredVersion(tool, tool_call):
     for line in version_output.splitlines():
         line = line.strip()
 
-        if line.startswith(("black, version", "__main__.py, version ")):
+        if line.startswith(
+            ("black, version", "python -m black, version", "__main__.py, version ")
+        ):
             actual_version = line.split()[-1]
             break
         if line.startswith("VERSION "):
+            actual_version = line.split()[-1]
+            break
+        if line.startswith("rstfmt "):
             actual_version = line.split()[-1]
             break
 
@@ -338,6 +342,7 @@ def _cleanupImportSortOrder(filename):
             isort_call
             + [
                 "-q",  # quiet, but stdout is still garbage
+                "--overwrite-in-place",  # avoid using another temp file, this is already on one.
                 "-ot",  # Order imports by type in addition to alphabetically
                 "-m3",  # "vert-hanging"
                 "-tc",  # Trailing commas
@@ -505,6 +510,7 @@ def autoformat(filename, git_stage, abort, effective_filename=None, trace=True):
         (
             ".patch",
             ".txt",
+            ".qml",
             ".rst",
             ".sh",
             ".in",
@@ -518,6 +524,7 @@ def autoformat(filename, git_stage, abort, effective_filename=None, trace=True):
             ".json",
             ".spec",
             "-rpmlintrc",
+            "Containerfile",
         )
     ) or os.path.basename(filename) in (
         "changelog",

@@ -23,9 +23,9 @@ binaries (needed for exec) and run them capturing outputs.
 
 
 import os
-import subprocess
 from contextlib import contextmanager
 
+from nuitka.__past__ import subprocess
 from nuitka.PythonVersions import python_version
 from nuitka.Tracing import general
 
@@ -85,7 +85,7 @@ def _getExecutablePath(filename, search_path):
 
 
 def getExecutablePath(filename):
-    """ Find an execute in PATH environment. """
+    """Find an execute in PATH environment."""
 
     # Search in PATH environment.
     search_path = os.environ.get("PATH", "")
@@ -216,6 +216,15 @@ def check_call(*popenargs, **kwargs):
         )
 
 
+def call(*popenargs, **kwargs):
+    """Call a process and return result code.
+
+    Note: We use same name as in Python stdlib, violating our rules to
+    make it more recognizable what this does.
+    """
+    subprocess.call(*popenargs, **kwargs)
+
+
 @contextmanager
 def withEnvironmentPathAdded(env_var_name, *paths):
     assert os.path.sep not in env_var_name
@@ -225,7 +234,7 @@ def withEnvironmentPathAdded(env_var_name, *paths):
 
     if path:
         if str is not bytes and type(path) is bytes:
-            path = path.decode("utf-8")
+            path = path.decode("utf8")
 
         if env_var_name in os.environ:
             old_path = os.environ[env_var_name]
@@ -245,7 +254,7 @@ def withEnvironmentPathAdded(env_var_name, *paths):
 
 @contextmanager
 def withEnvironmentVarOverriden(env_var_name, value):
-    """ Change an environment and restore it after context. """
+    """Change an environment and restore it after context."""
 
     if env_var_name in os.environ:
         old_value = os.environ[env_var_name]
@@ -268,7 +277,7 @@ def withEnvironmentVarOverriden(env_var_name, value):
 
 @contextmanager
 def withEnvironmentVarsOverriden(mapping):
-    """ Change multiple environment variables and restore them after context. """
+    """Change multiple environment variables and restore them after context."""
 
     old_values = {}
 
@@ -416,7 +425,7 @@ def getNullInput():
 
 
 def executeToolChecked(logger, command, absence_message, stderr_filter=None):
-    """Execute external tool, checking for success and no error outputs, returning result. """
+    """Execute external tool, checking for success and no error outputs, returning result."""
 
     tool = command[0]
 

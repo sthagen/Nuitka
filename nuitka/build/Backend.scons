@@ -41,14 +41,14 @@ __package__ = "nuitka.build"  # pylint: disable=redefined-builtin
 
 # isort:start
 
+import json
 import platform
 import subprocess
 
-import SCons  # pylint: disable=import-error
-from SCons.Script import (  # pylint: disable=import-error
+import SCons  # pylint: disable=I0021,import-error
+from SCons.Script import (  # pylint: disable=I0021,import-error
     ARGUMENTS,
     Environment,
-    File,
     GetOption,
 )
 
@@ -66,6 +66,7 @@ from .SconsCompilerSettings import (
     decideConstantsBlobResourceMode,
     enableC11Settings,
     enableExperimentalSettings,
+    enableLtoSettings,
     enableWindowsStackSize,
 )
 from .SconsHacks import (
@@ -142,6 +143,8 @@ python_version = tuple(int(d) for d in python_version_str.split("."))
 abiflags = getArgumentDefaulted("abiflags", "")
 python_abi_version = python_version_str + abiflags
 
+nuitka_python = getArgumentBool("nuitka_python", False)
+
 # Python debug mode: reference count checking, assertions in CPython core.
 python_debug = getArgumentBool("python_debug", False)
 
@@ -161,7 +164,9 @@ trace_mode = getArgumentBool("trace_mode", False)
 # support, the compiled result would not run correctly.
 lto_mode = getArgumentBool("lto_mode", False)
 
-static_libpython = getArgumentBool("static_libpython", False)
+static_libpython = getArgumentDefaulted("static_libpython", "")
+if static_libpython:
+    assert os.path.exists(static_libpython), static_libpython
 
 # Windows target mode: Compile for Windows. Used to be an option, but we
 # no longer cross compile this way.
@@ -170,8 +175,6 @@ win_target = os.name == "nt"
 noelf_mode = getArgumentBool("noelf_mode", False)
 
 macosx_target = sys.platform == "darwin"
-
-openbsd_target = sys.platform.startswith("openbsd")
 
 # Windows subsystem mode: Disable console for windows builds.
 win_disable_console = getArgumentBool("win_disable_console", False)
@@ -191,12 +194,6 @@ mingw_mode = getArgumentBool("mingw_mode", False)
 
 # Clang compiler mode, forced on macOS and FreeBSD (excluding PowerPC), optional on Linux.
 clang_mode = getArgumentBool("clang_mode", False)
-if (
-    macosx_target
-    or openbsd_target
-    or ("freebsd" in sys.platform and target_arch != "powerpc")
-):
-    clang_mode = True
 
 # Clang on Windows is always clang-cl for now.
 clangcl_mode = False
@@ -405,7 +402,7 @@ Error, compiler %s is apparently a C++ compiler, specify a C compiler instead.
             % the_cc_name
         )
 
-    # Consider switching too ikd gcc to its g++ compiler as a workaround that makes us work without C11.
+    # Consider switching from gcc to its g++ compiler as a workaround that makes us work without C11.
     the_compiler, the_gcc_name = switchFromGccToGpp(
         gcc_version=gcc_version,
         the_compiler=the_compiler,
@@ -491,6 +488,9 @@ if "clang" in the_cc_name:
 
     if debug_mode:
         env.Append(CCFLAGS=["-Wunused-but-set-variable"])
+
+# Enable LTO for compiler.
+lto_mode = enableLtoSettings(env=env, lto_mode=lto_mode, msvc_mode=msvc_mode)
 
 if lto_mode and mingw_mode:
     scons_logger.warning(
@@ -731,11 +731,14 @@ if win_target:
 
     if msvc_mode:
         # This is used for "GetCommandLineW" used in Windows code for Python3.
-        if python_version >= (3,):
+        if python_version >= (3,) or onefile_temp_mode:
             env.Append(LIBS=["Shell32"])
 
 if python_debug:
     env.Append(CPPDEFINES=["Py_DEBUG"])
+
+if static_libpython:
+    env.Append(CPPDEFINES=["Py_NO_ENABLE_SHARED"])
 
 
 def detectHostMultiarch():
@@ -769,55 +772,6 @@ if gcc_mode and "linux" in sys.platform:
                     )
                 ]
             )
-
-
-# For Nuitka, it generally is OK to break out of the virtualenv, and use the
-# original install. Mind you, this is not about executing anything, this is
-# about building, and finding the headers to compile against that Python, we
-# do not care about any site packages, and so on.
-
-# Some virtualenv, at least on macOS, have such handy links, pointing to the
-# Python installation.
-
-if not win_target and os.path.islink(os.path.join(python_prefix, ".Python")):
-    python_prefix = os.path.normpath(
-        os.path.join(os.readlink(os.path.join(python_prefix, ".Python")), "..")
-    )
-
-# Some virtualenv created by "venv" seem to have a different structure, where
-# library and include files are outside of it.
-
-if (
-    not win_target
-    and python_version >= (3, 3)
-    and os.path.exists(os.path.join(python_prefix, "bin/activate"))
-):
-    python_binary = os.path.join(python_prefix, "bin", "python")
-    python_binary = os.path.realpath(python_binary)
-
-    python_prefix = os.path.normpath(os.path.join(python_binary, "..", ".."))
-
-# Some virtualenv contain the "orig-prefix.txt" as a textual link to
-# the target, this is Windows and standard virtualenv. There are two
-# places to look for.
-def _detectVirtualEnvPrefix():
-    for candidate in (
-        "Lib/orig-prefix.txt",
-        "lib/python%s/orig-prefix.txt" % python_version_str,
-    ):
-        # we change the global value, pylint: disable=global-statement
-        global python_prefix
-
-        candidate = os.path.join(python_prefix, candidate)
-        if os.path.exists(candidate):
-            with open(candidate) as f:
-                python_prefix = f.read()
-
-            # Trailing spaces in the python prefix, please not.
-            assert python_prefix == python_prefix.strip()
-
-
-_detectVirtualEnvPrefix()
 
 
 def _detectPythonHeaderPath():
@@ -871,35 +825,27 @@ def getWindowsPythonDLLPath():
     return os.environ["NUITKA_PYTHON_DLL_PATH"]
 
 
-def detectStaticLibPython():
-    candidates = [
-        # Anaconda has this.
-        os.path.join(
-            python_prefix,
-            "libs",
-            "libpython" + python_abi_version.replace(".", "") + ".dll.a",
-        ),
-        # MSYS2 mingw64 Python has this.
-        os.path.join(
-            python_prefix,
-            "lib",
-            "libpython" + python_abi_version + ".dll.a",
-        ),
-    ]
-
-    for candidate in candidates:
-        if os.path.exists(candidate):
-            return candidate
-
-
 if win_target:
-    # Some non standard Pythons on Windows have this.
-    static_lib_filename = detectStaticLibPython()
-
-    if gcc_mode and static_libpython and os.path.exists(static_lib_filename):
-        env.Append(LIBS=[File(static_lib_filename)])
+    if nuitka_python:
+        env.Append(
+            LINKFLAGS=[
+                "/LTCG",
+                "/USEPROFILE:PGD=" + os.path.join(python_prefix, "python.pgd"),
+            ]
+        )
+        with open(os.path.join(python_prefix, "link.json")) as f:
+            linkData = json.load(f)
+            env.Append(LIBS=linkData["libraries"])
+            env.Append(LIBPATH=linkData["library_dirs"])
+            for define, value in linkData["macros"]:
+                if value:
+                    env.Append(CPPDEFINES=[define + "=" + value])
+                else:
+                    env.Append(CPPDEFINES=[define])
+    elif gcc_mode and static_libpython:
+        env.Append(LIBS=[env.File(static_libpython)])
     else:
-
+        # Some non standard Pythons on Windows have this.
         def addWinLib():
             # Make sure to locate the Python link library from multiple potential
             # locations (installed vs. self-built).
@@ -925,12 +871,8 @@ elif not module_mode:
     python_lib_path = os.path.join(python_prefix, "lib")
     env.Append(LIBPATH=[python_lib_path])
 
-    static_lib_filename = os.path.join(
-        python_lib_path, "libpython" + python_abi_version + ".a"
-    )
-
-    if not module_mode and static_libpython and os.path.exists(static_lib_filename):
-        env.Append(LIBS=[File(static_lib_filename)])
+    if not module_mode and static_libpython:
+        env.Append(LIBS=[env.File(static_libpython)])
     else:
         # Debian and Ubuntu distinguish the system libraries like this.
         if (
@@ -1067,10 +1009,6 @@ else:
     if msvc_mode:
         env.Append(CCFLAGS=["/MT"])  # Multithreaded, static version of C run time.
 
-# Tell compiler to use link time optimization for MSVC
-if msvc_mode and lto_mode:
-    env.Append(CCFLAGS=["/GL"])
-    env.Append(LINKFLAGS=["/LTCG"])
 
 if module_mode:
     env.Append(CPPDEFINES=["_NUITKA_MODULE"])
@@ -1308,6 +1246,6 @@ writeSconsReport(
     clangcl_mode=clangcl_mode,
 )
 
-setSconsProgressBarTotal(len(source_files))
+setSconsProgressBarTotal("Backend", len(source_files))
 
 env.Default(target)

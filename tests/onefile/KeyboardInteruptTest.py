@@ -21,6 +21,8 @@
 
 """
 
+# nuitka-project: --onefile
+
 import sys
 import time
 
